@@ -51,11 +51,13 @@ const (
 // temporary directory and the healthcheck server on an ephemeral port.
 //
 // It uses os.MkdirTemp rather than t.TempDir because unix socket paths are
-// limited to ~104 bytes on macOS and t.TempDir embeds the test name.
+// limited to ~104 bytes on macOS and t.TempDir embeds the test name. Use /tmp
+// because the default macOS temporary directory leaves too little space
+// for a long driver name and a rolling-update socket filename.
 func newDriverTestConfig(t *testing.T, deviceHealth bool, healthcheckPort int) (*Config, *error) {
 	t.Helper()
 
-	tmp, err := os.MkdirTemp("", "dra")
+	tmp, err := os.MkdirTemp("/tmp", "dra")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = os.RemoveAll(tmp) })
 
@@ -83,6 +85,40 @@ func newDriverTestConfig(t *testing.T, deviceHealth bool, healthcheckPort int) (
 		cancelMainCtx: func(err error) { fatal = err },
 		profile:       cpu.NewProfile(testNodeName, testDriverName, flags.cpuNUMANodes, flags.cpusPerNUMANode),
 	}, &fatal
+}
+
+func TestLivenessWithHashedRegistrationSocket(t *testing.T) {
+	// Use a fixed 36-character Pod UID. Its exact value has no special meaning.
+	const podUID = "f358c92b-e974-4f29-a84f-6c64bec0949d"
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Keep the DRA socket path short so the driver can start.
+	// Make only the registration path long enough to require a hashed filename.
+	config, _ := newDriverTestConfig(t, false, 0)
+	config.flags.podUID = podUID
+	registryDir := filepath.Join(config.flags.kubeletRegistrarDirectoryPath, "long-registration-directory-for-liveness")
+	config.flags.kubeletRegistrarDirectoryPath = registryDir
+	require.NoError(t, os.MkdirAll(registryDir, 0750))
+	fullUIDFilename := config.flags.driverName + "-" + config.flags.podUID + "-reg.sock"
+	require.Greater(t, len(filepath.Join(registryDir, fullUIDFilename)), 108,
+		"the path must exceed the helper's limit to trigger a hashed filename")
+
+	d, err := NewDriver(ctx, config)
+	require.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, d.Shutdown(klog.FromContext(ctx))) })
+
+	// Verify that the registration server selected a different filename.
+	entries, err := os.ReadDir(registryDir)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.NotEqual(t, fullUIDFilename, entries[0].Name())
+
+	// Liveness must reach the real registration and DRA sockets.
+	resp, err := d.healthcheck.Check(ctx, &grpc_health_v1.HealthCheckRequest{Service: "liveness"})
+	require.NoError(t, err)
+	assert.Equal(t, grpc_health_v1.HealthCheckResponse_SERVING, resp.GetStatus())
 }
 
 func TestNewDriverLifecycle(t *testing.T) {
