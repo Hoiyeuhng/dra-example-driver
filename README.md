@@ -477,33 +477,38 @@ Use the cleanup steps documented in [`demo/clusters`](demo/clusters/README.md).
 
 The default driver name is `<profile>.dra-example-driver.sigs.k8s.io`.
 The profiles are `gpu`, `cpu`, and `net`. The Helm chart uses the same name
-for the DeviceClass. Set `driverName` in the chart or `--driver-name` in the
-binaries to use a custom name.
+for the DeviceClass.
+
+To use a custom driver name, set `driverName` in the chart.
+For a binary, set `--driver-name`.
 
 ### Custom driver names
 
 With the default chart directories, use at most **36 ASCII characters** for
-`driverName`. The chart sets `POD_UID`, which adds a 36-character UUID to the
-DRA socket filename:
+`driverName`. The chart sets `POD_UID`. The plugin uses this 36-character UUID
+in the DRA socket filename:
 
 ```text
 /var/lib/kubelet/plugins/<driverName>/dra-<podUID>.sock
 ```
 
-The full path must not exceed **107 bytes** on Linux. The default driver
-names use 34 characters and produce a 105-byte path. A longer
-`kubeletPlugin.kubeletPluginsDirectoryPath` reduces the space for the driver name.
-The registration socket uses a hash when necessary. The DRA socket does not.
-The current plugin helper can select a 108-byte registration path.
-With the default registration directory, this occurs for **28-character driver names**.
-Do not use those names. A custom registration directory can cause the same problem.
-The chart checks both socket paths before installation and rejects paths above
-107 bytes. If you run the binary directly, check both paths with your actual
-directories and Pod UID.
+The socket path must be **107 bytes or less** on Linux. The default driver
+names have 34 characters. These names give a path with 105 bytes.
+A longer `kubeletPlugin.kubeletPluginsDirectoryPath` decreases the maximum length of the driver name.
+
+The plugin helper can use a hash to decrease the length of the registration socket filename.
+It does not change the length of the DRA socket filename.
+With the default registration directory, do not use **28-character driver names**.
+For these names, the helper in this version selects a registration socket path with 108 bytes.
+A custom registration directory can cause the same problem.
+
+The chart checks both socket paths before installation.
+It stops the installation if a path has more than 107 bytes.
+If you start a binary directly, check both paths with your directories and Pod UID.
 
 ### Breaking changes
 
-This version replaces the earlier `example.com` identities. Update these items:
+This version replaces the previous `example.com` identities. Update these items:
 
 | Item | New value |
 | --- | --- |
@@ -516,22 +521,24 @@ This version replaces the earlier `example.com` identities. Update these items:
 | Entry in `webhooks[].name` | `dra.dra-example-driver.sigs.k8s.io` |
 
 The driver name also identifies allocations, CDI devices, and the state directory.
-This version does not convert allocated claims or read old checkpoints.
-A custom driver name does not restore the old API groups or checkpoint format.
+This version does not change previous claim allocations to use the new driver name.
+It does not read previous checkpoints.
+A custom driver name does not make the previous API groups or checkpoint format compatible with this version.
 
 To replace an existing installation:
 
-1. Stop the workloads that use the old driver.
-2. Delete their ResourceClaims while the old driver still operates. Wait for
-   the driver to release the devices and for Kubernetes to delete the claims.
-3. Uninstall the old driver. Remove old DeviceClasses and ResourceSlices
-   after all claims release them.
-4. Update workload manifests and ResourceClaimTemplates. Use the new API
-   versions, CEL selectors, capacity keys, taints, tolerations, and health annotations.
-5. Install the new driver. Create the claims and workloads again.
+1. Stop the workloads that use the previous driver.
+2. While the previous driver operates, delete the ResourceClaims for these workloads.
+3. Wait for the driver to release the devices and for Kubernetes to delete the ResourceClaims.
+4. Uninstall the previous driver.
+5. Remove the previous DeviceClasses and ResourceSlices.
+6. Update the workload manifests and ResourceClaimTemplates with the new values from the examples.
+   These include API versions, CEL selectors, capacity keys, taints, tolerations, and health annotations.
+7. Install the new driver.
+8. Create the ResourceClaims and workloads again.
 
-Do not copy old checkpoints into the new state directory. Rolling updates
-between installations that use the new identities keep checkpoint recovery.
+Do not copy previous checkpoints into the new state directory.
+For subsequent rolling updates, the driver can read checkpoints that use the new API group.
 Use a new test cluster for the updated demos.
 
 The `registry.example.com` placeholder and the `example.com/gpu` extended

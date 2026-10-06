@@ -45,16 +45,12 @@ func TestDriverIdentity(t *testing.T) {
 				if override != "" {
 					expected = override
 				}
-				chart, err := loader.Load("../../deployments/helm/dra-example-driver")
-				require.NoError(t, err)
-				values, err := chartutil.ToRenderValues(chart, map[string]any{
+				rendered, err := renderChart(t, map[string]any{
 					"deviceProfile": profile,
 					"driverName":    override,
 					"webhook":       map[string]any{"enabled": true},
 					"controller":    map[string]any{"plugins": []any{"binding-conditions"}},
-				}, common.ReleaseOptions{Name: "test", Namespace: "driver-test", IsInstall: true}, common.DefaultCapabilities)
-				require.NoError(t, err)
-				rendered, err := engine.Render(chart, values)
+				})
 				require.NoError(t, err)
 				var dc resourcev1.DeviceClass
 				require.NoError(t, yaml.Unmarshal([]byte(rendered["dra-example-driver/templates/deviceclass.yaml"]), &dc))
@@ -92,17 +88,11 @@ func TestDriverSocketPathLimit(t *testing.T) {
 		{name: "clean directory before checking", driverName: strings.Repeat("a", 24) + ".example.org", pluginsDir: "/var/lib/kubelet/plugins/./"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			chart, err := loader.Load("../../deployments/helm/dra-example-driver")
-			require.NoError(t, err)
 			overrides := map[string]any{"driverName": tc.driverName}
 			if tc.pluginsDir != "" {
 				overrides["kubeletPlugin"] = map[string]any{"kubeletPluginsDirectoryPath": tc.pluginsDir}
 			}
-			values, err := chartutil.ToRenderValues(chart, overrides, common.ReleaseOptions{
-				Name: "test", Namespace: "driver-test", IsInstall: true,
-			}, common.DefaultCapabilities)
-			require.NoError(t, err)
-			_, err = engine.Render(chart, values)
+			_, err := renderChart(t, overrides)
 			if tc.wantError != "" {
 				require.ErrorContains(t, err, tc.wantError)
 				assert.ErrorContains(t, err, "Shorten driverName or kubeletPlugin.kubeletPluginsDirectoryPath")
@@ -138,14 +128,10 @@ func TestRegistrationSocketPathLimit(t *testing.T) {
 			filename := kubeletplugin.RollingUpdateRegistrarSocketFile(tc.registryDir, driverName, podUID)
 			socketBytes := len(path.Join(tc.registryDir, filename))
 			require.Equal(t, tc.wantPathBytes, socketBytes)
-			chart, err := loader.Load("../../deployments/helm/dra-example-driver")
-			require.NoError(t, err)
-			values, err := chartutil.ToRenderValues(chart, map[string]any{
+			_, err := renderChart(t, map[string]any{
 				"driverName":    driverName,
 				"kubeletPlugin": map[string]any{"kubeletRegistrarDirectoryPath": tc.registryDir},
-			}, common.ReleaseOptions{Name: "test", Namespace: "driver-test", IsInstall: true}, common.DefaultCapabilities)
-			require.NoError(t, err)
-			_, err = engine.Render(chart, values)
+			})
 			if socketBytes > 107 {
 				require.ErrorContains(t, err, "Registration socket path is "+strconv.Itoa(socketBytes)+" bytes")
 				return
@@ -167,17 +153,11 @@ func TestDeviceHealthPodWatchRBAC(t *testing.T) {
 		{name: "disabled with simulation", values: map[string]any{"deviceHealth": false, "simulateHealthChanges": true}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			chart, err := loader.Load("../../deployments/helm/dra-example-driver")
-			require.NoError(t, err)
 			overrides := map[string]any{}
 			if tc.values != nil {
 				overrides["kubeletPlugin"] = tc.values
 			}
-			values, err := chartutil.ToRenderValues(chart, overrides, common.ReleaseOptions{
-				Name: "test", Namespace: "driver-test", IsInstall: true,
-			}, common.DefaultCapabilities)
-			require.NoError(t, err)
-			rendered, err := engine.Render(chart, values)
+			rendered, err := renderChart(t, overrides)
 			require.NoError(t, err)
 
 			// The env var names must match what the kubeletplugin binary reads
@@ -223,6 +203,19 @@ func TestDeviceHealthPodWatchRBAC(t *testing.T) {
 			}}, binding.Subjects)
 		})
 	}
+}
+
+func renderChart(t *testing.T, overrides map[string]any) (map[string]string, error) {
+	t.Helper()
+	chart, err := loader.Load("../../deployments/helm/dra-example-driver")
+	require.NoError(t, err)
+	values, err := chartutil.ToRenderValues(chart, overrides, common.ReleaseOptions{
+		Name: "test", Namespace: "driver-test", IsInstall: true,
+	}, common.DefaultCapabilities)
+	if err != nil {
+		return nil, err
+	}
+	return engine.Render(chart, values)
 }
 
 // pluginContainerEnv returns the literal env vars of the "plugin" container in

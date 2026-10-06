@@ -1,3 +1,4 @@
+{{- include "dra-example-driver.validateSocketPaths" . -}}
 ---
 apiVersion: apps/v1
 kind: DaemonSet
