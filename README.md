@@ -9,6 +9,8 @@ It is intended to demonstrate best-practices for how to construct a DRA
 resource driver and wrap it in a [helm chart](https://helm.sh/). It can be used
 as a starting point for implementing a driver for your own set of resources.
 
+For existing installations, read the [domain migration notes](docs/domain-migration.md) before upgrading.
+
 ## Quickstart and Demo
 
 Before diving into the details of how this example driver is constructed, it's
@@ -191,9 +193,9 @@ items:
   kind: ResourceSlice
   metadata:
     creationTimestamp: "2024-12-09T16:17:09Z"
-    generateName: dra-example-driver-cluster-worker-gpu.example.com-
+    generateName: dra-example-driver-cluster-worker-gpu.dra-example-driver.sigs.k8s.io-
     generation: 1
-    name: dra-example-driver-cluster-worker-gpu.example.com-rf2f7
+    name: dra-example-driver-cluster-worker-gpu.dra-example-driver.sigs.k8s.io-rf2f7
     ownerReferences:
     - apiVersion: v1
       controller: true
@@ -203,7 +205,7 @@ items:
     resourceVersion: "530"
     uid: d13fd8bd-0a71-43e1-ba79-ebd2fae4847a
   spec:
-    driver: gpu.example.com
+    driver: gpu.dra-example-driver.sigs.k8s.io
     nodeName: dra-example-driver-cluster-worker
     pool:
       generation: 0
@@ -469,6 +471,34 @@ kind cluster started previously:
 
 #### Other platforms
 Use the cleanup steps documented in [`demo/clusters`](demo/clusters/README.md).
+
+## Driver names
+
+The project uses these names:
+
+| Item | Name |
+| --- | --- |
+| Default driver and DeviceClass | `<profile>.dra-example-driver.sigs.k8s.io` (`gpu`, `cpu`, or `net`) |
+| GPU configuration API | `gpu.resource.dra-example-driver.sigs.k8s.io/v1alpha1` |
+| Network configuration API | `net.resource.dra-example-driver.sigs.k8s.io/v1alpha1` |
+| Checkpoint API | `checkpoint.internal.dra-example-driver.sigs.k8s.io/v1` |
+| Health annotation prefix | `health.dra-example-driver.sigs.k8s.io/` |
+| Validating webhook | `dra.dra-example-driver.sigs.k8s.io` |
+
+The Go configuration API packages are under `api/dra-example-driver.sigs.k8s.io/`.
+For your own driver, replace the project domain with a domain that you control.
+
+### Socket path limits
+
+On Linux, each complete DRA and registration socket path must be **107 bytes or less**.
+With the default chart directories and a 36-character Pod UID, the DRA socket path
+allows at most **36 ASCII characters** for `driverName`.
+
+The new default names have 34 characters. Their DRA socket paths have 105 bytes.
+The chart rejects DRA socket paths longer than 107 bytes. This check uses the configured
+plugin directory and driver name, and assumes a 36-character Pod UID.
+The chart does not check the registration socket path. For custom directories, check
+that path before you install the driver.
 
 ## Device Profiles
 

@@ -53,6 +53,9 @@ const (
 	// driverUninstallTimeout bounds the per-test Helm uninstall + namespace delete.
 	driverUninstallTimeout = 60 * time.Second
 
+	// The chart probes every 10 seconds and restarts after three failures.
+	driverLivenessObservationDuration = 35 * time.Second
+
 	// defaultDriverNumDevices is the smallest count that satisfies every demo
 	// manifest. Tests that need more can override via DriverConfig.NumDevices.
 	defaultDriverNumDevices = 2
@@ -68,8 +71,14 @@ const (
 type DriverConfig struct {
 	// DriverName overrides the auto-generated DRA driver name. Tests that
 	// share static testdata (e.g. the webhook tests) pin this. Defaults to
-	// the auto-generated release name + ".example.com".
+	// the auto-generated release name + ".test". Keep these arbitrary
+	// test identities short: the DRA socket path also contains the full pod
+	// UID. UseDefaultDriverName separately covers the longer shipped names.
 	DriverName string
+
+	// UseDefaultDriverName leaves driverName unset in Helm so the chart's
+	// actual profile default is exercised. Use only in Serial tests.
+	UseDefaultDriverName bool
 
 	// ExtendedResourceName advertises the DeviceClass under a KEP-5004 extended resource name. Defaults to "" (disabled).
 	ExtendedResourceName string
@@ -113,7 +122,14 @@ func installDriver(ctx context.Context, cfg DriverConfig) installedDriver {
 	releaseName := "dra-" + rand.String(6)
 	namespace := "dra-" + rand.String(6)
 	if cfg.DriverName == "" {
-		cfg.DriverName = releaseName + ".example.com"
+		cfg.DriverName = releaseName + ".test"
+	}
+	if cfg.UseDefaultDriverName {
+		profile := cfg.ExtraValues["deviceProfile"]
+		if profile == "" {
+			profile = "gpu"
+		}
+		cfg.DriverName = profile + ".dra-example-driver.sigs.k8s.io"
 	}
 	if cfg.NumDevices == 0 {
 		cfg.NumDevices = defaultDriverNumDevices
@@ -176,6 +192,9 @@ func buildHelmValues(cfg DriverConfig, namespace string) map[string]any {
 		"webhook": map[string]any{
 			"enabled": cfg.WebhookEnabled,
 		},
+	}
+	if cfg.UseDefaultDriverName {
+		delete(values, "driverName")
 	}
 	if cfg.ExtendedResourceName != "" {
 		values["deviceClass"] = map[string]any{
@@ -328,6 +347,55 @@ func waitForDriverReady(ctx context.Context, namespace, driverName string, webho
 	}
 }
 
+// rollDriver replaces the plugin Pods and waits for the new DaemonSet generation.
+func rollDriver(ctx context.Context, drv installedDriver) {
+	GinkgoHelper()
+
+	daemonSets, err := clientset.AppsV1().DaemonSets(drv.Namespace).List(ctx, metav1.ListOptions{LabelSelector: driverPodSelector})
+	Expect(err).NotTo(HaveOccurred())
+	Expect(daemonSets.Items).To(HaveLen(1))
+	ds := daemonSets.Items[0].DeepCopy()
+	if ds.Spec.Template.Annotations == nil {
+		ds.Spec.Template.Annotations = map[string]string{}
+	}
+	ds.Spec.Template.Annotations["kubectl.kubernetes.io/restartedAt"] = time.Now().Format(time.RFC3339Nano)
+	ds, err = clientset.AppsV1().DaemonSets(drv.Namespace).Update(ctx, ds, metav1.UpdateOptions{})
+	Expect(err).NotTo(HaveOccurred())
+	Eventually(func(g Gomega) {
+		current, err := clientset.AppsV1().DaemonSets(drv.Namespace).Get(ctx, ds.Name, metav1.GetOptions{})
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(current.Status.ObservedGeneration).To(BeNumerically(">=", ds.Generation))
+		g.Expect(current.Status.DesiredNumberScheduled).To(BeNumerically(">", 0))
+		g.Expect(current.Status.UpdatedNumberScheduled).To(Equal(current.Status.DesiredNumberScheduled))
+		g.Expect(current.Status.NumberAvailable).To(Equal(current.Status.DesiredNumberScheduled))
+		pods, err := clientset.CoreV1().Pods(drv.Namespace).List(ctx, metav1.ListOptions{LabelSelector: driverPodSelector})
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(pods.Items).To(HaveLen(int(current.Status.DesiredNumberScheduled)))
+		for _, p := range pods.Items {
+			g.Expect(p.DeletionTimestamp).To(BeNil())
+			g.Expect(p.Annotations["kubectl.kubernetes.io/restartedAt"]).To(Equal(ds.Spec.Template.Annotations["kubectl.kubernetes.io/restartedAt"]))
+		}
+	}).WithContext(ctx).WithTimeout(driverInstallTimeout).WithPolling(time.Second).Should(Succeed())
+}
+
+// verifyDriverRemainsHealthy observes readiness and restarts across liveness probes.
+func verifyDriverRemainsHealthy(ctx context.Context, drv installedDriver) {
+	GinkgoHelper()
+
+	Consistently(func(g Gomega) {
+		pods, err := clientset.CoreV1().Pods(drv.Namespace).List(ctx, metav1.ListOptions{LabelSelector: driverPodSelector})
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(pods.Items).NotTo(BeEmpty())
+		for _, p := range pods.Items {
+			g.Expect(p.Status.ContainerStatuses).NotTo(BeEmpty())
+			for _, container := range p.Status.ContainerStatuses {
+				g.Expect(container.Ready).To(BeTrue())
+				g.Expect(container.RestartCount).To(BeZero())
+			}
+		}
+	}).WithContext(ctx).WithTimeout(driverLivenessObservationDuration).WithPolling(time.Second).Should(Succeed())
+}
+
 // newHelmActionConfig initializes a Helm action.Configuration scoped to the
 // given install namespace. registryClient is required for OCI chart pulls and
 // may be nil for actions (e.g. uninstall) that operate only on existing releases.
@@ -353,7 +421,7 @@ func verifyWebhook(ctx context.Context, deviceClassName string) {
 	testClaim := &resourceapi.ResourceClaim{
 		ObjectMeta: metav1.ObjectMeta{
 			// ResourceClaim names use DNS-1123 subdomain validation, which
-			// allows the dots in the driver name (e.g. "gpu.example.com").
+			// allows the dots in the driver name (e.g. "gpu.dra-example-driver.sigs.k8s.io").
 			Name:      "webhook-test-" + deviceClassName,
 			Namespace: "default",
 		},
