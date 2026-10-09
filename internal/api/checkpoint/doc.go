@@ -22,6 +22,12 @@ limitations under the License.
 // internal types via the scheme. All versions are expected to follow the
 // Kubernetes [API Conventions].
 //
+// The project domain migration starts a new checkpoint API group. Checkpoints
+// from the previous group are not supported. Before upgrading or downgrading
+// across this change, release all claims, stop the driver, and remove its old
+// checkpoint files. See docs/domain-migration.md in the repository.
+// The versioning rules below apply within the new API group.
+//
 // # Changing the API
 //
 // As the driver evolves, so will the information included in checkpoints.

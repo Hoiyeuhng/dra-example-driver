@@ -16,8 +16,8 @@ allowDefaultNamespace: false
 #            where burst rates are configurable via opaque configuration.
 deviceProfile: "gpu"
 
-# driverName uniquely identifies the driver within the cluster. When empty, its
-# value is derived from the deviceProfile.
+# If driverName is empty, the chart uses <deviceProfile>.dra-example-driver.sigs.k8s.io.
+# See [Socket path limits](../../../README.md#socket-path-limits).
 driverName: ""
 
 # deviceClass configures the DeviceClass the driver creates for its devices.
