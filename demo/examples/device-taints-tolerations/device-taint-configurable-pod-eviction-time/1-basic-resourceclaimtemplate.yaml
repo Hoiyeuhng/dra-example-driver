@@ -61,7 +61,7 @@ spec:
 
 # Pods for each of the resource claim template
 
-# Pod which uses resource claim template without any toleration - gets evicted immediately
+# Pod without a toleration - eligible for eviction when the device taint is applied
 apiVersion: v1
 kind: Pod
 metadata:
