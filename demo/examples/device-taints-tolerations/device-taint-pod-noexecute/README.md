@@ -4,7 +4,7 @@
 
 This example demonstrates how device taints with the `NoExecute` effect work in Dynamic Resource Allocation (DRA). When a device taint with `NoExecute` effect is applied, the pods using the tainted device are evicted unless they have the matching tolerations.
 
-**Setup**: Two pods requesting GPUs without tolerations, followed by applying a device taint rule with `NoExecute` effect.
+**Setup**: Create one pod requesting a GPU without tolerations, apply a `NoExecute` device taint, then create a second pod.
 
 ## Device Taint Behavior
 
@@ -18,10 +18,10 @@ graph TD
     
     subgraph AfterTaint["After Device Taint Applied"]
         P1E[Pod: pod-to-be-evicted<br/>Status: Terminating]
-        P2[Pod: pod-no-execute<br/>Status: Scheduled → Evicted]
+        P2[Pod: pod-no-execute<br/>Status: Pending]
         G1T[GPU Device<br/>Tainted: NoExecute]
         P1E -.->|Evicted| G1T
-        P2 -.->|Scheduled then Evicted| G1T
+        P2 -.->|Scheduling blocked| G1T
     end
     
     Initial --> AfterTaint
@@ -63,10 +63,16 @@ For more information about device taints and tolerations, see the [Kubernetes do
    kubectl apply -f 2-pod-to-be-evicted.yaml
    ```
 
-3. Verify the pod is running:
+3. Wait for the pod to be ready:
+
+   Before this pod can start, the scheduler must allocate a device for its ResourceClaim.
+   If the scheduler sees the taint before allocation, the claim has no matching toleration,
+   so the pod may remain Pending. Waiting for the pod to be ready lets this example
+   demonstrate eviction of a running pod.
 
    ```bash
-   kubectl get pods -n basic-resourceclaimtemplate
+   kubectl wait -n basic-resourceclaimtemplate \
+     --for=condition=Ready pod/pod-to-be-evicted --timeout=120s
    ```
 
 4. Apply the device taint rule with `NoExecute` effect:
@@ -75,9 +81,11 @@ For more information about device taints and tolerations, see the [Kubernetes do
    kubectl apply -f 3-device-taint-rule.yaml
    ```
 
-5. Observe the pod being evicted:
+5. Wait for the first pod to be deleted, then check its eviction events:
 
    ```bash
+   kubectl wait -n basic-resourceclaimtemplate \
+     --for=delete pod/pod-to-be-evicted --timeout=120s
    kubectl get events -n basic-resourceclaimtemplate
    ```
 
@@ -89,6 +97,9 @@ For more information about device taints and tolerations, see the [Kubernetes do
 
 ## Expected Behavior
 
+For the second pod, these results assume that the scheduler has read the rule before device allocation.
+Otherwise, that pod can also be evicted.
+
 ### Pod 1 (pod-to-be-evicted)
 - **Initial State**: Successfully scheduled and running on a node
 - **After Taint Applied**: Device Taint Manager marks it for deletion
@@ -96,9 +107,9 @@ For more information about device taints and tolerations, see the [Kubernetes do
 
 ### Pod 2 (pod-no-execute)
 - **Initial State**: Created after device taint is applied
-- **Scheduling**: Successfully assigned to a node
-- **Execution**: Immediately marked for deletion by Device Taint Manager
-- **Final State**: Never runs, gets evicted right after scheduling
+- **Scheduling**: Blocked because the available devices have an untolerated taint
+- **Execution**: Container does not start
+- **Final State**: Remains Pending while the taint is present
 
 ## Event Timeline
 
@@ -110,15 +121,14 @@ pod-to-be-evicted: Container started, Running
 Device Taint Rule applied (NoExecute effect)
 pod-to-be-evicted: DeviceTaintManagerEviction - Marking for deletion
 pod-to-be-evicted: Killing container
-pod-no-execute: Scheduled to taint-tolerate-worker
-pod-no-execute: DeviceTaintManagerEviction - Marking for deletion (immediately)
+pod-no-execute: FailedScheduling, remains Pending
 ```
 
 ## Cleanup
 
 ```bash
-kubectl delete -f 4-pod-no-execute.yaml
+kubectl delete --ignore-not-found -f 4-pod-no-execute.yaml
 kubectl delete -f 3-device-taint-rule.yaml
-kubectl delete -f 2-pod-to-be-evicted.yaml
+kubectl delete --ignore-not-found -f 2-pod-to-be-evicted.yaml
 kubectl delete -f 1-basic-resourceclaimtemplate.yaml
 ```

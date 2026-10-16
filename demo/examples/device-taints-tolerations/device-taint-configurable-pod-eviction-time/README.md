@@ -5,7 +5,7 @@
 This example demonstrates how to configure toleration duration using `tolerationSeconds` in Dynamic Resource Allocation (DRA). When a device taint with `NoExecute` effect is applied, pods can specify how long they can tolerate the taint before being evicted. This allows for graceful handling of device issues with configurable grace periods.
 
 **Setup**: Three pods with different toleration configurations:
-1. No toleration - immediate eviction
+1. No toleration - eviction without a toleration period
 2. Unlimited toleration - never evicted
 3. Time-limited toleration (300s) - evicted after 5 minutes
 
@@ -24,21 +24,21 @@ graph TD
     end
     
     subgraph AfterTaint["After Device Taint Applied (T+0s)"]
-        P1E[pod-no-toleration<br/>❌ Evicted Immediately]
+        P1E[pod-no-toleration<br/>Eviction Due]
         P2R[pod-with-toleration<br/>✓ Still Running]
         P3R[pod-with-300s-toleration<br/>✓ Still Running]
         G1T[GPU Devices<br/>Tainted: NoExecute]
-        P1E -.->|Evicted| G1T
+        P1E -.->|No toleration| G1T
         P2R -.->|Tolerating| G1T
         P3R -.->|Tolerating 300s| G1T
     end
     
     subgraph After300s["After 300 Seconds (T+300s)"]
         P2S[pod-with-toleration<br/>✓ Still Running]
-        P3E[pod-with-300s-toleration<br/>❌ Evicted]
+        P3E[pod-with-300s-toleration<br/>Eviction Due]
         G1T2[GPU Devices<br/>Tainted: NoExecute]
         P2S -.->|Tolerating| G1T2
-        P3E -.->|Evicted| G1T2
+        P3E -.->|Toleration expired| G1T2
     end
     
     Initial --> AfterTaint
@@ -56,6 +56,9 @@ graph TD
     style G1T fill:#e74c3c,color:#fff,stroke:#c0392b,stroke-width:3px
     style G1T2 fill:#e74c3c,color:#fff,stroke:#c0392b,stroke-width:3px
 ```
+
+Times are measured from `spec.taint.timeAdded` and indicate when eviction becomes due.
+The controller and kubelet need additional time to process the deletion.
 
 ## Requirements
 
@@ -94,11 +97,17 @@ pod/pod-with-300s-toleration created
 
 ### Step 2: Verify All Pods Are Running
 
+Wait for all three pods to run before applying the taint; otherwise, the pod
+without a toleration may remain Pending instead of being evicted.
+
 ```bash
+kubectl wait -n basic-resourceclaimtemplate --for=condition=Ready \
+  pod/pod-no-toleration pod/pod-with-toleration \
+  pod/pod-with-300s-toleration --timeout=120s
 kubectl get pods -n basic-resourceclaimtemplate
 ```
 
-**Expected Output:**
+**Expected output from `kubectl get pods`:**
 ```
 NAME                       READY   STATUS    RESTARTS   AGE
 pod-no-toleration          1/1     Running   0          6s
@@ -134,9 +143,9 @@ kubectl create -f 2-device-taint-rule.yaml
 devicetaintrule.resource.k8s.io/example created
 ```
 
-### Step 4: Observe Immediate Eviction
+### Step 4: Observe Eviction Without Toleration
 
-Immediately after applying the taint, the pod without toleration is evicted:
+After the controller processes the taint, the pod without toleration is evicted:
 
 ```bash
 kubectl get pods -n basic-resourceclaimtemplate
@@ -176,7 +185,9 @@ status:
 
 ### Step 6: Wait for 300 Seconds
 
-After 300 seconds (5 minutes), the pod with time-limited toleration is evicted:
+The toleration period starts at `spec.taint.timeAdded` in the DeviceTaintRule.
+After 300 seconds (5 minutes), the pod with time-limited toleration becomes eligible for eviction.
+The controller and kubelet need additional time to process the deletion:
 
 ```bash
 kubectl get pods -n basic-resourceclaimtemplate
@@ -217,8 +228,8 @@ status:
 
 ### Pod 1: pod-no-toleration
 - **Toleration**: None
-- **Behavior**: Evicted immediately when taint is applied
-- **Eviction Time**: ~10 seconds after taint application
+- **Behavior**: Eligible for eviction when the taint is applied
+- **Eviction Time**: After the controller processes the taint
 - **Final State**: Terminated
 
 ### Pod 2: pod-with-toleration
@@ -244,7 +255,7 @@ status:
     tolerationSeconds: 300
   ```
 - **Behavior**: Tolerates the taint for 300 seconds, then evicted
-- **Eviction Time**: Exactly 300 seconds after taint application
+- **Eviction Time**: After the 300-second toleration expires
 - **Final State**: Terminated
 
 ## Event Timeline
@@ -254,7 +265,7 @@ Event
 ------
 All 3 pods created and running
 DeviceTaintRule applied
-pod-no-toleration: Marked for deletion (immediate eviction)
+pod-no-toleration: Marked for deletion (no toleration delay)
 pod-no-toleration: Container killed
 pod-with-300s-toleration: Marked for deletion (300s elapsed)
 pod-with-300s-toleration: Container killed
@@ -265,5 +276,5 @@ pod-with-toleration: Still running
 
 ```bash
 kubectl delete -f 2-device-taint-rule.yaml
-kubectl delete -f 1-basic-resourceclaimtemplate.yaml
+kubectl delete --ignore-not-found -f 1-basic-resourceclaimtemplate.yaml
 ```
